@@ -1,22 +1,14 @@
 import asyncio
 import os
+import json
 from random import randint, uniform
 import random
-from cleaner import clean_opportunity
-import json, os
-from utils import deduplicate_opportunities
 
 from pydoll.browser import tab as Tab
 from pydoll.browser.chromium import Chrome
 from pydoll.browser.options import ChromiumOptions
-# from pydoll.connection.connection_handler import ConnectionHandler
-# from pydoll.protocol.network.events import NetworkEvent
-# from pydoll.protocol.page.events import PageEvent
-
 from pydoll.decorators import retry
 from pydoll.exceptions import WaitElementTimeout, NetworkError, ElementNotFound, TimeoutException
-# from pydoll.utils import wait_for_event
-
 from dotenv import load_dotenv
 import logging
 from utils import configure_logging
@@ -39,7 +31,7 @@ PROXIES = [
     'http://103.155.62.141:8081',
     'http://110.38.226.139:8080',
     'http://202.154.241.199:808',
-    ]
+]
 
 def get_proxy():
     global PROXIES
@@ -47,6 +39,10 @@ def get_proxy():
     PROXIES.append(proxy)
 
     return proxy
+
+# --- AGENCY PREFIXES REQUIRED ---
+AGENCY_PREFIXES = ["D", "G", "J", "L"]
+AGENCIES_PER_PREFIX = 5
 
 async def login(tab):
     goto_login = await tab.find(tag_name='a', class_name='MuiButtonBase-root')
@@ -95,74 +91,61 @@ async def login(tab):
         if alert_p is not None:
             logging.warning(f"Login failed (alert found after password). Waiting 30s for possible manual correction or retry...")
             await asyncio.sleep(30)
-            # Optionally could retry once more, but for now, we wait for user intervention.
     except ElementNotFound:
         pass
     await asyncio.sleep(uniform(2.0,4.0))
 
-async def goto_agency_tab(agency_tab):
-    pass
-
-# --- AGENCY PREFIXES REQUIRED ---
-AGENCY_PREFIXES = ["D", "G", "J", "L"]
-AGENCIES_PER_PREFIX = 5
-
-# --- HELPERS FOR AGENCY SELECTION ---
-def agency_matches_prefix(agency_name, prefix):
-    return agency_name.strip().upper().startswith(prefix)
-
-def get_selected_agencies(agency_list):
-    selected = {p: [] for p in AGENCY_PREFIXES}
-    for agency in agency_list:
-        name = agency.get("name", "").strip()
-        for p in AGENCY_PREFIXES:
-            if name.upper().startswith(p) and len(selected[p]) < AGENCIES_PER_PREFIX:
-                selected[p].append(agency)
-    # Flatten into single list
-    return [ag for ags in selected.values() for ag in ags]    
-
-async def find_agency_listing(agency_tab, scrape_agency_opportunities):
-    """
-    Immediately scrape opportunities as soon as a D/G/J/L agency is found,
-    collect up to 5 per prefix, break immediately when the quota is hit for all 4 letters.
-    """
-    selected = {p: 0 for p in ["D", "G", "J", "L"]}
-    agencies_collected = {p: [] for p in ["D", "G", "J", "L"]}
+async def navigate_agency_search_tab(agency_tab, on_agency_found):
+    """Navigate agency search pages, find matching agencies (D/G/J/L), call callback immediately for each."""
+    selected = {p: 0 for p in AGENCY_PREFIXES}
+    seen_names = set()
     page_idx = 1
+    
     while True:
-        cards = await agency_tab.find(tag_name='div', class_name='MuiBox-root css-cfm4ee', find_all=True)
+        cards = await agency_tab.find(tag_name='div', class_name='css-cfm4ee', find_all=True)
         logging.info(f"[Page {page_idx}] Found {len(cards)} agency card elements")
+        
         for card in cards:
             try:
-                name_p = await card.find(tag_name='p', class_name='MuiTypography-root MuiTypography-subtitle2  css-prt0s1')
-                name = name_p.text.strip()
-                prefix = next((p for p in selected if name.upper().startswith(p)), None)
+                name_p = await card.find(tag_name='p', class_name='css-prt0s1')
+                name = str(await name_p.text).strip()
+                prefix = next((p for p in AGENCY_PREFIXES if name.upper().startswith(p)), None)
+                
                 if not prefix:
                     continue
-                if selected[prefix] >= 5:
+                if name in seen_names or selected[prefix] >= AGENCIES_PER_PREFIX:
                     continue
-                # Scrape this agency's opportunities immediately
-                region_span = await card.find(tag_name='span', class_name='MuiTypography-root MuiTypography-body3 css-1l59ypq', raise_exec=False)
+                    
+                seen_names.add(name)
+                region_span = await card.find(tag_name='span', class_name='css-1l59ypq', raise_exec=False)
                 region = str(await region_span.text).strip() if region_span else None
-                agency_obj = {'name': name, 'region': region, 'card_element': card}
-                has_opportunities = await scrape_agency_opportunities(agency_obj)
-                if has_opportunities:
-                    agencies_collected[prefix].append(agency_obj)
+                
+                agency_obj = {
+                    'name': name,
+                    'region': region,
+                    'card_element': card
+                }
+                
+                # Call callback immediately - it will scrape and return True if has open opps
+                has_open = await on_agency_found(agency_obj)
+                if has_open:
                     selected[prefix] += 1
-                    logging.info(f"Selected {name} (prefix {prefix}), now have {selected[prefix]} for {prefix}.")
-                else:
-                    logging.info(f"Skipping {name}: No open opportunities found.")
-                # If we've satisfied all quotas, stop all collection immediately
-                if all(n == 5 for n in selected.values()):
+                    logging.info(f"Selected {name} ({prefix}): {selected[prefix]}/5 for {prefix}")
+                
+                if all(selected[p] == AGENCIES_PER_PREFIX for p in AGENCY_PREFIXES):
                     logging.info(f"Collected all required agencies: {selected}")
-                    return agencies_collected
+                    return
             except Exception as e:
-                logging.warning(f"Error parsing agency card or scraping opps: {e}")
+                logging.warning(f"Error parsing agency card: {e}")
                 continue
-        # Pagination: footer
+        
+        if all(selected[p] == AGENCIES_PER_PREFIX for p in AGENCY_PREFIXES):
+            break
+            
+        # Pagination check
         try:
-            paginator_p = await agency_tab.find(tag_name='p', class_name='MuiTypography-root MuiTypography-body2 css-ghev09')
-            paginator_text = paginator_p.text.strip()
+            paginator_p = await agency_tab.find(tag_name='p', class_name='css-ghev09')
+            paginator_text = str(await paginator_p.text).strip()
             parts = paginator_text.split()
             last_entry = int(parts[3])
             total_entries = int(parts[-1])
@@ -172,24 +155,32 @@ async def find_agency_listing(agency_tab, scrape_agency_opportunities):
         except Exception as e:
             logging.warning(f"Could not parse page footer for pagination: {e}")
             break
-        # Find next page button by aria-label
+            
         try:
             next_btn = await agency_tab.find(tag_name='button', aria_label='Go to next page')
-            await human_like_click(next_btn)
+            await next_btn.click(
+                x_offset=random.randint(-3, 5),
+                y_offset=random.randint(-4, 4)
+            )
             await asyncio.sleep(random.uniform(2.5, 4.2))
+
             page_idx += 1
+
         except Exception as e:
             logging.info(f"Could not click next page, stopping: {e}")
             break
-    return agencies_collected
 
-async def fetch_opportunities(parent_tab, agency_obj, kind='open'):
-    """Click card, catch new tab, scrape the right opportunity kind."""
-    # Click agency card -> opens new tab
+async def scrape_agency_page(parent_tab, agency_obj):
+    """Open agency page, scrape both open and past opportunities, return raw data."""
     card = agency_obj['card_element']
     tabs_before = parent_tab.window.open_tabs
-    await human_like_click(card)
-    await asyncio.sleep(random.uniform(3.5, 6.0)) # wait for new tab load
+    
+    await card.click(
+        x_offset=random.randint(-3, 5),
+        y_offset=random.randint(-4, 4)
+    )
+    await asyncio.sleep(random.uniform(3.5, 6.0))
+    
     # Wait for new tab
     newtab = None
     for _ in range(10):
@@ -198,149 +189,166 @@ async def fetch_opportunities(parent_tab, agency_obj, kind='open'):
             newtab = list(set(tabs_after) - set(tabs_before))[0]
             break
         await asyncio.sleep(0.5)
+    
     if not newtab:
-        return []
+        logging.warning(f"Could not open tab for {agency_obj['name']}")
+        return [], []
+    
     await newtab.bring_to_front()
-    await asyncio.sleep(random.uniform(1.2, 2.2)) # wait for content render
-    # Now scrape opportunities of the right type
-    data = await extract_opportunities_from_agency_tab(newtab, kind=kind)
+    await asyncio.sleep(random.uniform(1.2, 2.2))
+    
+    # Scrape open opportunities
+    open_opps = await scrape_opportunity_tab(newtab, 'open')
+    
+    # Scrape past opportunities
+    past_opps = await scrape_opportunity_tab(newtab, 'past')
+    
     await newtab.close()
-    return data
+    return open_opps, past_opps
 
-async def go_to_portal_and_tab(agency_tab, taburl_type):
-    '''Go to Portal and switch to open or past opportunities via URL.'''
-    ORG_URL = str(agency_tab.url).split('/portal')[0]
-    TARGET_URL = f"{ORG_URL}/portal/?tab={taburl_type}"
-    await agency_tab.go_to(TARGET_URL)
-    await asyncio.sleep(random.uniform(2.5, 4.7)) # wait for tab/page load
-    return
-
-async def get_opportunity_links_on_tab(tab):
-    """
-    Find all 'View Opportunity' links on current tab.
-    Returns: list of absolute URLs.
-    """
+async def scrape_opportunity_tab(agency_tab, kind='open'):
+    """Navigate to open or past tab, get all opportunity links, fetch details for each."""
+    taburl_type = 'openOpportunities' if kind == 'open' else 'pastOpportunities'
+    org_url = str(agency_tab.url).split('/portal')[0]
+    target_url = f"{org_url}/portal/?tab={taburl_type}"
+    
+    await agency_tab.go_to(target_url)
+    await asyncio.sleep(random.uniform(2.5, 4.7))
+    
+    # Find all opportunity links
     links = []
-    buttons = await tab.find_all(css_selector="a.btn.bold")
+    buttons = await agency_tab.find(tag_name="a", class_name="btn bold", find_all=True)
     for btn in buttons:
         href = btn.get_attribute("href")
         if href and "/opportunities/" in href:
-            org_url = str(tab.url).split('/portal')[0]
             links.append(f"{org_url}{href}")
-    return links
+    
+    logging.info(f"Found {len(links)} opportunities for {kind}")
+    
+    # Fetch details for each opportunity
+    results = []
+    for url in links:
+        opp_data = await fetch_opportunity_data(agency_tab, url)
+        if opp_data:
+            opp_data['apply_url'] = url
+            results.append(opp_data)
+    
+    return results
 
-async def extract_opportunity_details(tab, opp_url):
-    '''Open a new tab, go to opp_url, parse <script type=ld+json>, close tab.'''
-    data = None
-    browser = tab.window
+async def fetch_opportunity_data(parent_tab, opp_url):
+    """Open opportunity detail page, extract data from JSON-LD script, return raw data."""
+    browser = parent_tab.window
     opp_tab = await browser.new_tab()
+    data = None
+    
     try:
         await opp_tab.go_to(opp_url)
-        await asyncio.sleep(random.uniform(3.5, 6.0)) # wait for detail load
-        # CAPTCHA handling (pseudo):
-        # If captcha present, skip/log. UI review needed for bypass.
-        #if await opp_tab.find(...):
-        #   logging.warning(f"Captcha detected at {opp_url}, skipping.")
-        #   return None
-        # Extract first <script type='application/ld+json'> block:
+        await asyncio.sleep(random.uniform(3.5, 6.0))
+        
+        # Extract JSON-LD script
         scripts = await opp_tab.find_all(xpath="//script[@type='application/ld+json']")
         for script in scripts:
             text = getattr(script, "text", None) or getattr(script, "innerText", "")
             if text and '{' in text:
                 try:
-                    import json
                     d = json.loads(text)
                     data = d
                     break
                 except Exception as e:
                     continue
-        # supplement with main fields if missing
     except Exception as e:
         logging.error(f"Failed to extract {opp_url}: {e}")
+    
     await opp_tab.close()
-    await asyncio.sleep(random.uniform(0.9, 1.6)) # wait between details
+    await asyncio.sleep(random.uniform(0.9, 1.6))
     return data
 
-async def extract_opportunities_from_agency_tab(tab, kind='open'):
-    '''Go to open/past tab, find all opps, open each, scrape details (<script type=ld+json>).'''
-    taburl_type = 'openOpportunities' if kind == 'open' else 'pastOpportunities'
-    await go_to_portal_and_tab(tab, taburl_type)
-    opp_links = await get_opportunity_links_on_tab(tab)
-    logging.info(f"Found {len(opp_links)} opportunities for {kind}")
-    result = []
-    for url in opp_links:
-        opp_data = await extract_opportunity_details(tab, url)
-        if opp_data is None:
-            continue
-        opp_data['apply_url'] = url # Add detail page as application url
-        result.append(opp_data)
-    return result
-
-async def find_public_opportunities():
-    '''
-    pass and present opportunities
-    '''
-    pass
-
-async def fetch_data():
-    ''' Fetch data for each listing and save into raw data '''
+@retry(max_retries=5, exceptions=[TimeoutException, ElementNotFound])
+async def run_scraper():
+    """Main scraper: login, find agencies, scrape opportunities, dump raw data."""
     raw_folder = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'data'))
     os.makedirs(raw_folder, exist_ok=True)
+    
     proxy = get_proxy()
     options = ChromiumOptions()
-    options.add_argument(f'--proxy-server={proxy}')
-
+    # options.add_argument(f'--proxy-server={proxy}')
+    
+    all_open_raw = []
+    all_past_raw = []
+    
     async with Chrome(options=options) as browser:
         tab = await browser.start()
         await tab.enable_network_events()
         await tab.go_to(BASE_URL)
-
+        
         await login(tab)
         await asyncio.sleep(10)
-
+        
         agency_tab = await browser.new_tab()
         await agency_tab.go_to(f'{BASE_URL}agencies/search')
         await asyncio.sleep(5)
-
-        # Define a function to scrape opportunities for a single agency
-        async def scrape_agency_opportunities(agency_obj):
-            open_opps = await fetch_opportunities(agency_tab, agency_obj, kind='open')
-            for item in open_opps:
-                clean = clean_opportunity(item, agency_obj)
-                # Add to a temporary list for deduplication
-                all_open.append(clean)
-            past_opps = await fetch_opportunities(agency_tab, agency_obj, kind='past')
-            for item in past_opps:
-                clean = clean_opportunity(item, agency_obj)
-                # Add to a temporary list for deduplication
-                all_past.append(clean)
-            return len(open_opps) > 0 # Return True if open opportunities were found
-
-        # Initialize lists to collect all opportunities
-        all_open = []
-        all_past = []
-
-        # Call find_agency_listing with the scraping function
-        agencies_collected = await find_agency_listing(agency_tab, scrape_agency_opportunities)
-
-        # Deduplicate
-        all_open = deduplicate_opportunities(all_open)
-        all_past = deduplicate_opportunities(all_past)
-        with open(os.path.join(raw_folder, 'open_opportunities.json'), 'w') as f:
-            json.dump(all_open, f, indent=2)
-        with open(os.path.join(raw_folder, 'past_opportunities.json'), 'w') as f:
-            json.dump(all_past, f, indent=2)
-    return True
-
-@retry(max_retries=5, exceptions=[TimeoutException, ElementNotFound])
-async def run_scraper():
-    await fetch_data()
+        
+        # Callback: scrape agency immediately when found
+        async def handle_agency(agency_obj):
+            open_opps, past_opps = await scrape_agency_page(agency_tab, agency_obj)
+            if open_opps:
+                for opp in open_opps:
+                    opp['organization_name'] = agency_obj['name']
+                    all_open_raw.append(opp)
+                for opp in past_opps:
+                    opp['organization_name'] = agency_obj['name']
+                    all_past_raw.append(opp)
+                return True
+            else:
+                logging.info(f"Skipped {agency_obj['name']}: No open opportunities.")
+                return False
+        
+        # Navigate and scrape as we go
+        await navigate_agency_search_tab(agency_tab, handle_agency)
+        
+        # Dump raw data
+        with open(os.path.join(raw_folder, 'open_opportunities_raw.json'), 'w') as f:
+            json.dump(all_open_raw, f, indent=2)
+        with open(os.path.join(raw_folder, 'past_opportunities_raw.json'), 'w') as f:
+            json.dump(all_past_raw, f, indent=2)
+        
+        logging.info(f"Scraped {len(all_open_raw)} open and {len(all_past_raw)} past opportunities (raw data saved)")
 
 if __name__ == "__main__":
+    configure_logging()
     asyncio.run(run_scraper())
-'''
-* turn raw data into two different files (open and past)
-* Use a cleaner function from cleaner.py that will clean data (stripping, changing datatypes etc) before saving into both files
-* Add functions to db.py to initialize db, add table, add data to table. Make sure to have a function that runs on start up to check if db exists and table exist. Make them if they do not exist
-* work on docker file to run up and setup everything as required in project description. 
-'''
+    
+    # After scraping, clean and store
+    from cleaner import clean_all_opportunities
+    from db import init_db, insert_opportunities
+    from utils import deduplicate_opportunities
+    import json
+    import os
+    
+    raw_folder = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'data'))
+    
+    # Load raw data
+    with open(os.path.join(raw_folder, 'open_opportunities_raw.json'), 'r') as f:
+        open_raw = json.load(f)
+    with open(os.path.join(raw_folder, 'past_opportunities_raw.json'), 'r') as f:
+        past_raw = json.load(f)
+    
+    # Clean data
+    open_clean = clean_all_opportunities(open_raw)
+    past_clean = clean_all_opportunities(past_raw)
+    
+    # Deduplicate
+    open_clean = deduplicate_opportunities(open_clean)
+    past_clean = deduplicate_opportunities(past_clean)
+    
+    # Save cleaned data
+    with open(os.path.join(raw_folder, 'open_opportunities.json'), 'w') as f:
+        json.dump(open_clean, f, indent=2)
+    with open(os.path.join(raw_folder, 'past_opportunities.json'), 'w') as f:
+        json.dump(past_clean, f, indent=2)
+    
+    # Store to DB
+    init_db()
+    insert_opportunities(open_clean + past_clean)
+    
+    logging.info("Cleaning and database storage complete")
