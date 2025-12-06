@@ -6,7 +6,7 @@ def clean_opportunity(raw, agency=None):
     Returns cleaned dict with schema for Mongo insertion.
     '''
     result = {
-        'organization_name': agency.get('name') if agency else raw.get('organization', None),
+        'organization_name': raw.get('organization_name') or (agency.get('name') if agency else raw.get('organization', None)),
         'bidding_id': raw.get('id') or raw.get('opp_id') or None,
         'opportunity_name': raw.get('name') or raw.get('title') or None,
         'description': raw.get('description') or raw.get('details') or None,
@@ -30,3 +30,12 @@ def clean_deadline(deadline):
     if match:
         return match.group(1)
     return str(deadline).strip()
+
+def clean_all_opportunities(raw_list):
+    """Process a list of raw opportunities, return cleaned list."""
+    cleaned = []
+    for raw in raw_list:
+        # organization_name is already in raw from scraper
+        agency = {'name': raw.get('organization_name')} if raw.get('organization_name') else None
+        cleaned.append(clean_opportunity(raw, agency))
+    return cleaned
