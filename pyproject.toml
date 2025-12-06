@@ -11,7 +11,8 @@ requires-python = ">=3.12, <4.0"
 dependencies = [
     "pydoll-python (>=2.12.4,<3.0.0)",
     "pandas (>=2.3.3,<3.0.0)",
-    "python-dotenv (>=1.2.1,<2.0.0)"
+    "python-dotenv (>=1.2.1,<2.0.0)",
+    "pymongo (>=4.15.5,<5.0.0)"
 ]
 
 

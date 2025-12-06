@@ -1,0 +1,33 @@
+version: '3.8'
+services:
+  mongodb:
+    image: mongo:5.0
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: root
+      MONGO_INITDB_ROOT_PASSWORD: example
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo-data:/data/db
+    healthcheck:
+      test: [ "CMD", "mongo", "--eval", "db.adminCommand('ping')" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  scraper:
+    build:
+      context: ..
+      dockerfile: docker/DockerFile
+    volumes:
+      - ../.env:/app/.env
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    environment:
+      - MONGO_URI=mongodb://root:example@mongodb:27017/
+      - MONGO_DB=euna
+    command: [ "python", "src/scraper.py" ]
+
+volumes:
+  mongo-data:
