@@ -2,7 +2,11 @@ import asyncio
 import os
 import json
 from random import randint, uniform
-import random
+from cleaner import clean_all_opportunities
+from db import init_db, insert_opportunities
+from utils import deduplicate_opportunities
+import json
+import os
 
 from pydoll.browser import tab as Tab
 from pydoll.browser.chromium import Chrome
@@ -109,37 +113,104 @@ async def navigate_agency_search_tab(agency_tab, on_agency_found):
             try:
                 name_p = await card.find(tag_name='p', class_name='css-prt0s1')
                 name = str(await name_p.text).strip()
+
                 prefix = next((p for p in AGENCY_PREFIXES if name.upper().startswith(p)), None)
                 
                 if not prefix:
-                    continue
-                if name in seen_names or selected[prefix] >= AGENCIES_PER_PREFIX:
+                    continue  # Skip non-matching agencies
+                    
+                if name in seen_names:
                     continue
                     
+                if selected[prefix] >= AGENCIES_PER_PREFIX:
+                    logging.info(f"Skipping {name} ({prefix}): Already have {selected[prefix]}/5")
+                    continue
+                
+                # MATCHING AGENCY - Click card immediately
                 seen_names.add(name)
+                logging.info(f"Found target: {name} ({prefix}) - Clicking card now...")
+                
+                # Click card immediately
+                try:
+                    await card.click(
+                        x_offset=randint(-3, 5),
+                        y_offset=randint(-4, 4)
+                    )
+                    await asyncio.sleep(uniform(3.5, 6.0))
+
+                except Exception as e:
+                    logging.error(f"Failed to click card for {name}: {e}")
+                    continue
+                # Wait for new tab to open
+                browser = agency_tab.window
+                try:
+                    tabs_before = list(browser.open_tabs) if hasattr(browser, 'open_tabs') else []
+                    tabs_before_count = len(tabs_before)
+                except:
+                    tabs_before_count = 0
+                
+                agency_page_tab = None
+                for attempt in range(20):
+                    try:
+                        tabs_after = list(browser.open_tabs) if hasattr(browser, 'open_tabs') else []
+                        if len(tabs_after) > tabs_before_count:
+                            agency_page_tab = tabs_after[-1]
+                            break
+                    except:
+                        pass
+                    await asyncio.sleep(0.5)
+                
+                if not agency_page_tab:
+                    logging.error(f"Could not open tab for {name}")
+                    continue
+                
+                # Bring tab to foreground
+                try:
+                    await agency_page_tab.bring_to_front()
+                    await asyncio.sleep(uniform(1.2, 2.2))
+                except Exception as e:
+                    logging.error(f"Failed to bring tab to front for {name}: {e}")
+                    try:
+                        await agency_page_tab.close()
+                    except:
+                        pass
+                    continue
+                
+                # Get region info
                 region_span = await card.find(tag_name='span', class_name='css-1l59ypq', raise_exec=False)
                 region = str(await region_span.text).strip() if region_span else None
                 
+                # Now scrape using the agency_page_tab variable
                 agency_obj = {
                     'name': name,
                     'region': region,
-                    'card_element': card
+                    'agency_tab': agency_page_tab
                 }
                 
-                # Call callback immediately - it will scrape and return True if has open opps
-                has_open = await on_agency_found(agency_obj)
-                if has_open:
-                    selected[prefix] += 1
-                    logging.info(f"Selected {name} ({prefix}): {selected[prefix]}/5 for {prefix}")
+                try:
+                    has_open = await on_agency_found(agency_obj)
+                    if has_open:
+                        selected[prefix] += 1
+                        logging.info(f"Selected {name} ({prefix}): {selected[prefix]}/5. Total: {sum(selected.values())}/20")
+                except Exception as e:
+                    logging.error(f"Error scraping {name}: {e}")
+                finally:
+                    try:
+                        await agency_page_tab.close()
+                    except:
+                        pass
                 
+                # Check if all quotas met - STOP IMMEDIATELY
                 if all(selected[p] == AGENCIES_PER_PREFIX for p in AGENCY_PREFIXES):
-                    logging.info(f"Collected all required agencies: {selected}")
+                    logging.info(f"✓✓✓ ALL QUOTAS MET! {selected}. STOPPING NOW.")
                     return
             except Exception as e:
                 logging.warning(f"Error parsing agency card: {e}")
                 continue
         
+        # Check quotas before pagination - if met, stop
         if all(selected[p] == AGENCIES_PER_PREFIX for p in AGENCY_PREFIXES):
+            logging.info(f"All quotas met after processing page {page_idx}: {selected}")
             break
             
         # Pagination check
@@ -159,10 +230,10 @@ async def navigate_agency_search_tab(agency_tab, on_agency_found):
         try:
             next_btn = await agency_tab.find(tag_name='button', aria_label='Go to next page')
             await next_btn.click(
-                x_offset=random.randint(-3, 5),
-                y_offset=random.randint(-4, 4)
+                x_offset=randint(-3, 5),
+                y_offset=randint(-4, 4)
             )
-            await asyncio.sleep(random.uniform(2.5, 4.2))
+            await asyncio.sleep(uniform(2.5, 4.2))
 
             page_idx += 1
 
@@ -170,40 +241,16 @@ async def navigate_agency_search_tab(agency_tab, on_agency_found):
             logging.info(f"Could not click next page, stopping: {e}")
             break
 
-async def scrape_agency_page(parent_tab, agency_obj):
-    """Open agency page, scrape both open and past opportunities, return raw data."""
-    card = agency_obj['card_element']
-    tabs_before = parent_tab.window.open_tabs
-    
-    await card.click(
-        x_offset=random.randint(-3, 5),
-        y_offset=random.randint(-4, 4)
-    )
-    await asyncio.sleep(random.uniform(3.5, 6.0))
-    
-    # Wait for new tab
-    newtab = None
-    for _ in range(10):
-        tabs_after = parent_tab.window.open_tabs
-        if len(tabs_after) > len(tabs_before):
-            newtab = list(set(tabs_after) - set(tabs_before))[0]
-            break
-        await asyncio.sleep(0.5)
-    
-    if not newtab:
-        logging.warning(f"Could not open tab for {agency_obj['name']}")
-        return [], []
-    
-    await newtab.bring_to_front()
-    await asyncio.sleep(random.uniform(1.2, 2.2))
+async def scrape_agency_page(agency_tab, agency_obj):
+    """Scrape both open and past opportunities from already-opened agency tab."""
+    logging.info(f"Scraping opportunities for {agency_obj['name']}")
     
     # Scrape open opportunities
-    open_opps = await scrape_opportunity_tab(newtab, 'open')
+    open_opps = await scrape_opportunity_tab(agency_tab, 'open')
     
     # Scrape past opportunities
-    past_opps = await scrape_opportunity_tab(newtab, 'past')
+    past_opps = await scrape_opportunity_tab(agency_tab, 'past')
     
-    await newtab.close()
     return open_opps, past_opps
 
 async def scrape_opportunity_tab(agency_tab, kind='open'):
@@ -213,7 +260,7 @@ async def scrape_opportunity_tab(agency_tab, kind='open'):
     target_url = f"{org_url}/portal/?tab={taburl_type}"
     
     await agency_tab.go_to(target_url)
-    await asyncio.sleep(random.uniform(2.5, 4.7))
+    await asyncio.sleep(uniform(2.5, 4.7))
     
     # Find all opportunity links
     links = []
@@ -243,7 +290,7 @@ async def fetch_opportunity_data(parent_tab, opp_url):
     
     try:
         await opp_tab.go_to(opp_url)
-        await asyncio.sleep(random.uniform(3.5, 6.0))
+        await asyncio.sleep(uniform(3.5, 6.0))
         
         # Extract JSON-LD script
         scripts = await opp_tab.find_all(xpath="//script[@type='application/ld+json']")
@@ -260,7 +307,7 @@ async def fetch_opportunity_data(parent_tab, opp_url):
         logging.error(f"Failed to extract {opp_url}: {e}")
     
     await opp_tab.close()
-    await asyncio.sleep(random.uniform(0.9, 1.6))
+    await asyncio.sleep(uniform(0.9, 1.6))
     return data
 
 @retry(max_retries=5, exceptions=[TimeoutException, ElementNotFound])
@@ -288,19 +335,29 @@ async def run_scraper():
         await agency_tab.go_to(f'{BASE_URL}agencies/search')
         await asyncio.sleep(5)
         
-        # Callback: scrape agency immediately when found
+        # Callback: scrape agency immediately when found (agency_tab is already opened)
         async def handle_agency(agency_obj):
-            open_opps, past_opps = await scrape_agency_page(agency_tab, agency_obj)
-            if open_opps:
-                for opp in open_opps:
-                    opp['organization_name'] = agency_obj['name']
-                    all_open_raw.append(opp)
-                for opp in past_opps:
-                    opp['organization_name'] = agency_obj['name']
-                    all_past_raw.append(opp)
-                return True
-            else:
-                logging.info(f"Skipped {agency_obj['name']}: No open opportunities.")
+            agency_page_tab = agency_obj.get('agency_tab')
+            if not agency_page_tab:
+                logging.error(f"No agency tab provided for {agency_obj['name']}")
+                return False
+            logging.info(f"Scraping opportunities for {agency_obj['name']}")
+            try:
+                open_opps, past_opps = await scrape_agency_page(agency_page_tab, agency_obj)
+                if open_opps:
+                    logging.info(f"Found {len(open_opps)} open and {len(past_opps)} past opportunities for {agency_obj['name']}")
+                    for opp in open_opps:
+                        opp['organization_name'] = agency_obj['name']
+                        all_open_raw.append(opp)
+                    for opp in past_opps:
+                        opp['organization_name'] = agency_obj['name']
+                        all_past_raw.append(opp)
+                    return True
+                else:
+                    logging.info(f"Skipped {agency_obj['name']}: No open opportunities.")
+                    return False
+            except Exception as e:
+                logging.error(f"Error processing {agency_obj['name']}: {e}")
                 return False
         
         # Navigate and scrape as we go
@@ -319,11 +376,6 @@ if __name__ == "__main__":
     asyncio.run(run_scraper())
     
     # After scraping, clean and store
-    from cleaner import clean_all_opportunities
-    from db import init_db, insert_opportunities
-    from utils import deduplicate_opportunities
-    import json
-    import os
     
     raw_folder = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'data'))
     
