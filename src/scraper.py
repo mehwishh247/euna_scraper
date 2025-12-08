@@ -99,11 +99,18 @@ async def login(tab):
         pass
     await asyncio.sleep(uniform(2.0,4.0))
 
-async def navigate_agency_search_tab(agency_tab, on_agency_found):
+async def navigate_agency_search_tab(agency_tab, browser, on_agency_found):
     """Navigate agency search pages, find matching agencies (D/G/J/L), call callback immediately for each."""
     selected = {p: 0 for p in AGENCY_PREFIXES}
     seen_names = set()
     page_idx = 1
+
+    items_list = await agency_tab.find(tag_name='div', class_name='css-1ks2a1h')
+    await items_list.click()
+
+    items_on_page = await agency_tab.find(tag_name='li', class_name='css-1rfvp8v', data_value="80")
+    await items_on_page.click()
+    await asyncio.sleep(2.5)
     
     while True:
         cards = await agency_tab.find(tag_name='div', class_name='css-cfm4ee', find_all=True)
@@ -117,7 +124,7 @@ async def navigate_agency_search_tab(agency_tab, on_agency_found):
                 prefix = next((p for p in AGENCY_PREFIXES if name.upper().startswith(p)), None)
                 
                 if not prefix:
-                    continue  # Skip non-matching agencies
+                    continue 
                     
                 if name in seen_names:
                     continue
@@ -126,11 +133,9 @@ async def navigate_agency_search_tab(agency_tab, on_agency_found):
                     logging.info(f"Skipping {name} ({prefix}): Already have {selected[prefix]}/5")
                     continue
                 
-                # MATCHING AGENCY - Click card immediately
                 seen_names.add(name)
                 logging.info(f"Found target: {name} ({prefix}) - Clicking card now...")
                 
-                # Click card immediately
                 try:
                     await card.click(
                         x_offset=randint(-3, 5),
@@ -141,66 +146,45 @@ async def navigate_agency_search_tab(agency_tab, on_agency_found):
                 except Exception as e:
                     logging.error(f"Failed to click card for {name}: {e}")
                     continue
-                # Wait for new tab to open
-                browser = agency_tab.window
-                try:
-                    tabs_before = list(browser.open_tabs) if hasattr(browser, 'open_tabs') else []
-                    tabs_before_count = len(tabs_before)
-                except:
-                    tabs_before_count = 0
+
+                tabs = await browser.get_opened_tabs()
+                agency_page_tab = tabs[-1]
+
+                await asyncio.sleep(uniform(1.2, 2.2))
+
+                open_opps = await scrape_opportunity_tab(browser, agency_page_tab, 'open')
+                past_opps = await scrape_opportunity_tab(browser, agency_page_tab, 'past')
+
+                await agency_page_tab.close()
+                print('CLOSED')
+
+                with open('text.json', 'w+') as f:
+                    print('WRITING')
+                    json.dump(open_opps, f, indent=2)
+                    json.dump(past_opps, f, indent=2)
                 
-                agency_page_tab = None
-                for attempt in range(20):
-                    try:
-                        tabs_after = list(browser.open_tabs) if hasattr(browser, 'open_tabs') else []
-                        if len(tabs_after) > tabs_before_count:
-                            agency_page_tab = tabs_after[-1]
-                            break
-                    except:
-                        pass
-                    await asyncio.sleep(0.5)
+                # region_span = await card.find(tag_name='span', class_name='css-1l59ypq', raise_exec=False)
+                # region = str(await region_span.text).strip() if region_span else None
                 
-                if not agency_page_tab:
-                    logging.error(f"Could not open tab for {name}")
-                    continue
+                # agency_obj = {
+                #     'name': name,
+                #     'region': region,
+                #     'agency_tab': agency_page_tab
+                # }
                 
-                # Bring tab to foreground
-                try:
-                    await agency_page_tab.bring_to_front()
-                    await asyncio.sleep(uniform(1.2, 2.2))
-                except Exception as e:
-                    logging.error(f"Failed to bring tab to front for {name}: {e}")
-                    try:
-                        await agency_page_tab.close()
-                    except:
-                        pass
-                    continue
+                # try:
+                #     has_open = await on_agency_found(agency_obj)
+                #     if has_open:
+                #         selected[prefix] += 1
+                #         logging.info(f"Selected {name} ({prefix}): {selected[prefix]}/5. Total: {sum(selected.values())}/20")
+                # except Exception as e:
+                #     logging.error(f"Error scraping {name}: {e}")
+                # finally:
+                #     try:
+                #         await agency_page_tab.close()
+                #     except:
+                #         pass
                 
-                # Get region info
-                region_span = await card.find(tag_name='span', class_name='css-1l59ypq', raise_exec=False)
-                region = str(await region_span.text).strip() if region_span else None
-                
-                # Now scrape using the agency_page_tab variable
-                agency_obj = {
-                    'name': name,
-                    'region': region,
-                    'agency_tab': agency_page_tab
-                }
-                
-                try:
-                    has_open = await on_agency_found(agency_obj)
-                    if has_open:
-                        selected[prefix] += 1
-                        logging.info(f"Selected {name} ({prefix}): {selected[prefix]}/5. Total: {sum(selected.values())}/20")
-                except Exception as e:
-                    logging.error(f"Error scraping {name}: {e}")
-                finally:
-                    try:
-                        await agency_page_tab.close()
-                    except:
-                        pass
-                
-                # Check if all quotas met - STOP IMMEDIATELY
                 if all(selected[p] == AGENCIES_PER_PREFIX for p in AGENCY_PREFIXES):
                     logging.info(f"✓✓✓ ALL QUOTAS MET! {selected}. STOPPING NOW.")
                     return
@@ -208,12 +192,10 @@ async def navigate_agency_search_tab(agency_tab, on_agency_found):
                 logging.warning(f"Error parsing agency card: {e}")
                 continue
         
-        # Check quotas before pagination - if met, stop
         if all(selected[p] == AGENCIES_PER_PREFIX for p in AGENCY_PREFIXES):
             logging.info(f"All quotas met after processing page {page_idx}: {selected}")
             break
             
-        # Pagination check
         try:
             paginator_p = await agency_tab.find(tag_name='p', class_name='css-ghev09')
             paginator_text = str(await paginator_p.text).strip()
@@ -245,64 +227,61 @@ async def scrape_agency_page(agency_tab, agency_obj):
     """Scrape both open and past opportunities from already-opened agency tab."""
     logging.info(f"Scraping opportunities for {agency_obj['name']}")
     
-    # Scrape open opportunities
     open_opps = await scrape_opportunity_tab(agency_tab, 'open')
-    
-    # Scrape past opportunities
     past_opps = await scrape_opportunity_tab(agency_tab, 'past')
     
     return open_opps, past_opps
 
-async def scrape_opportunity_tab(agency_tab, kind='open'):
+async def scrape_opportunity_tab(browser, agency_tab, kind='open'):
     """Navigate to open or past tab, get all opportunity links, fetch details for each."""
+
     taburl_type = 'openOpportunities' if kind == 'open' else 'pastOpportunities'
-    org_url = str(agency_tab.url).split('/portal')[0]
-    target_url = f"{org_url}/portal/?tab={taburl_type}"
+
+    base_url = str(await agency_tab.current_url).split('/')[2]
+    target_url = f"https://{base_url}/portal/?tab={taburl_type}"
     
     await agency_tab.go_to(target_url)
-    await asyncio.sleep(uniform(2.5, 4.7))
+    await asyncio.sleep(4)
     
-    # Find all opportunity links
     links = []
-    buttons = await agency_tab.find(tag_name="a", class_name="btn bold", find_all=True)
+    buttons = await agency_tab.find(tag_name="a", class_name="btn bold box-sizing alignCenter", find_all=True)
     for btn in buttons:
         href = btn.get_attribute("href")
         if href and "/opportunities/" in href:
-            links.append(f"{org_url}{href}")
+            links.append(f"https://{base_url}{href}")
     
     logging.info(f"Found {len(links)} opportunities for {kind}")
     
-    # Fetch details for each opportunity
     results = []
     for url in links:
-        opp_data = await fetch_opportunity_data(agency_tab, url)
+        opp_data = await fetch_opportunity_data(browser, url)
         if opp_data:
             opp_data['apply_url'] = url
             results.append(opp_data)
     
     return results
 
-async def fetch_opportunity_data(parent_tab, opp_url):
+async def fetch_opportunity_data(browser, opp_url):
     """Open opportunity detail page, extract data from JSON-LD script, return raw data."""
-    browser = parent_tab.window
+
     opp_tab = await browser.new_tab()
     data = None
     
     try:
-        await opp_tab.go_to(opp_url)
+        async with opp_tab.expect_and_bypass_cloudflare_captcha():
+            await opp_tab.go_to(opp_url)
         await asyncio.sleep(uniform(3.5, 6.0))
         
-        # Extract JSON-LD script
-        scripts = await opp_tab.find_all(xpath="//script[@type='application/ld+json']")
-        for script in scripts:
-            text = getattr(script, "text", None) or getattr(script, "innerText", "")
-            if text and '{' in text:
-                try:
-                    d = json.loads(text)
-                    data = d
-                    break
-                except Exception as e:
-                    continue
+        script = await opp_tab.find(tag_name="script", type_name="application/ld+json")
+        
+        text = script.text
+        if text:
+            try:
+                d = json.loads(text)
+                data = d
+            except Exception as e:
+                logging.error(f"Failed to load script {opp_url}: {e}")
+                
     except Exception as e:
         logging.error(f"Failed to extract {opp_url}: {e}")
     
@@ -327,15 +306,26 @@ async def run_scraper():
         tab = await browser.start()
         await tab.enable_network_events()
         await tab.go_to(BASE_URL)
-        
+
+        # await asyncio.sleep(11)
+
+        # is_refresh = await tab.find(
+        #     tage_name='a',
+        #     class_name='rrm59m',
+        #     raise_exc=False)
+
+        # if is_refresh:
+        #     await is_refresh.click(
+        #         x_offset=randint(1, 2),
+        #         y_offset=randint(-1, 1)
+        #     )
         await login(tab)
         await asyncio.sleep(10)
-        
+
         agency_tab = await browser.new_tab()
         await agency_tab.go_to(f'{BASE_URL}agencies/search')
         await asyncio.sleep(5)
-        
-        # Callback: scrape agency immediately when found (agency_tab is already opened)
+
         async def handle_agency(agency_obj):
             agency_page_tab = agency_obj.get('agency_tab')
             if not agency_page_tab:
@@ -360,10 +350,8 @@ async def run_scraper():
                 logging.error(f"Error processing {agency_obj['name']}: {e}")
                 return False
         
-        # Navigate and scrape as we go
-        await navigate_agency_search_tab(agency_tab, handle_agency)
+        await navigate_agency_search_tab(agency_tab, browser, handle_agency)
         
-        # Dump raw data
         with open(os.path.join(raw_folder, 'open_opportunities_raw.json'), 'w') as f:
             json.dump(all_open_raw, f, indent=2)
         with open(os.path.join(raw_folder, 'past_opportunities_raw.json'), 'w') as f:
@@ -374,32 +362,25 @@ async def run_scraper():
 if __name__ == "__main__":
     configure_logging()
     asyncio.run(run_scraper())
-    
-    # After scraping, clean and store
-    
+        
     raw_folder = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'data'))
     
-    # Load raw data
     with open(os.path.join(raw_folder, 'open_opportunities_raw.json'), 'r') as f:
         open_raw = json.load(f)
     with open(os.path.join(raw_folder, 'past_opportunities_raw.json'), 'r') as f:
         past_raw = json.load(f)
     
-    # Clean data
     open_clean = clean_all_opportunities(open_raw)
     past_clean = clean_all_opportunities(past_raw)
     
-    # Deduplicate
     open_clean = deduplicate_opportunities(open_clean)
     past_clean = deduplicate_opportunities(past_clean)
     
-    # Save cleaned data
     with open(os.path.join(raw_folder, 'open_opportunities.json'), 'w') as f:
         json.dump(open_clean, f, indent=2)
     with open(os.path.join(raw_folder, 'past_opportunities.json'), 'w') as f:
         json.dump(past_clean, f, indent=2)
     
-    # Store to DB
     init_db()
     insert_opportunities(open_clean + past_clean)
     
