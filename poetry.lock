@@ -840,14 +840,14 @@ files = [
 
 [[package]]
 name = "pydoll-python"
-version = "2.12.4"
+version = "2.13.1"
 description = "Pydoll is a library for automating chromium-based browsers without a WebDriver, offering realistic interactions."
 optional = false
 python-versions = "<4.0,>=3.10"
 groups = ["main"]
 files = [
-    {file = "pydoll_python-2.12.4-py3-none-any.whl", hash = "sha256:2ecde6918b9c99d7a948dcbe216a48dd13df9cbb46fc3858bcdfb26b2756cf14"},
-    {file = "pydoll_python-2.12.4.tar.gz", hash = "sha256:26e6598c0b165b3d828aa17bd9a64d25fc2382c095a5733a61d0ee543fc4d671"},
+    {file = "pydoll_python-2.13.1-py3-none-any.whl", hash = "sha256:7f35aa773f3c57439749b52e601a24229b1afa2be7185a6395e62e0061020dd4"},
+    {file = "pydoll_python-2.13.1.tar.gz", hash = "sha256:f43f1178f3760bf20841777fc17e2ea274d1dfee0d30ac939465037e18478504"},
 ]
 
 [package.dependencies]
