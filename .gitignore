@@ -6,11 +6,11 @@ __pycache__/
 *.pyo
 *.pyd
 *.so
-.env
 
 # Virtual environments
 venv/
 .venv/
+.test_venv
 env/
 ENV/
 
