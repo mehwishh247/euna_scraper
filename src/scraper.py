@@ -48,7 +48,7 @@ def get_proxy():
     return proxy
 
 # --- AGENCY PREFIXES REQUIRED ---
-AGENCY_PREFIXES = ["D", "G", "J", "L"]
+AGENCY_PREFIXES = ["A", "G", "J", "L"]
 AGENCIES_PER_PREFIX = 5
 
 async def login(tab):
@@ -58,7 +58,7 @@ async def login(tab):
         x_offset=randint(-2,2),
         y_offset=randint(-2,2)
     )
-    await asyncio.sleep(uniform(3.0,6.5))
+    await asyncio.sleep(3.0)
     email = await tab.find(id="input-email")
     await email.click(
         x_offset=randint(-3, 5),
@@ -73,16 +73,16 @@ async def login(tab):
         x_offset=randint(-1, 2),
         y_offset=randint(1, 3)
     )
-    await asyncio.sleep(6)
+    await asyncio.sleep(1.0)
 
     password = await tab.find(id="input-password")
     await password.click(
         x_offset=randint(-3, 5),
         y_offset=randint(-5, 2)
     )
-    password.type_text(PASSWORD, humanize=True)
+    await password.type_text(PASSWORD, humanize=True)
 
-    continue_button = await tab.find(tag_name="button")
+    # continue_button = await tab.find(tag_name="button")
     await continue_button.click(
         x_offset=randint(-1, 2),
         y_offset=randint(1, 3)
@@ -144,7 +144,7 @@ async def navigate_agency_search_tab(agency_tab, browser, on_agency_found):
                         x_offset=randint(-3, 5),
                         y_offset=randint(-4, 4)
                     )
-                    await asyncio.sleep(uniform(3.5, 6.0))
+                    await asyncio.sleep(3.5)
 
                 except Exception as e:
                     logging.error(f"Failed to click card for {name}: {e}")
@@ -227,8 +227,8 @@ async def scrape_agency_page(browser, agency_tab, agency_obj) -> tuple[list[dict
     logging.info(f"Scraping opportunities for {agency_obj['name']}")
     
     open_opps = await scrape_opportunity_tab(browser, agency_tab, 'open')
-    if not open_opps:
-        return None, None
+    # if not open_opps:
+    #     return None, None
     past_opps = await scrape_opportunity_tab(browser, agency_tab, 'past')
     
     return open_opps, past_opps
@@ -270,19 +270,36 @@ async def fetch_opportunity_data(browser, opp_url) -> dict[str, str] | None:
 
     opp_tab = await browser.new_tab()
     data = None
-    custom_selector = (By.ID, "content")
+    custom_selector = (By.ID, "cf-chl-widget-4c1a1")
 
     try:
-        # await opp_tab.go_to(opp_url)
-        # await asyncio.sleep(10)
+        await opp_tab.go_to(opp_url)
+        await asyncio.sleep(5)
+        captcha = await opp_tab.find(
+            tag_name='iframe',
+            title="Widget containing a Cloudflare security challenge",
+            raise_exc=False
+            )
+        if captcha:
+            logging.info("Captcha detected...")
+            await asyncio.sleep(5)
+            return
         # tgnx8
-        async with opp_tab.expect_and_bypass_cloudflare_captcha(
-            custom_selector=custom_selector,
-            time_before_click=10,
-            time_to_wait_captcha=5
-            ):
-            await opp_tab.go_to(opp_url)
-            await asyncio.sleep(3)
+
+        # async with opp_tab.expect_and_bypass_cloudflare_captcha(
+        #     custom_selector=custom_selector,
+        #     time_before_click=3,
+        #     time_to_wait_captcha=5
+        #     ):
+        #     await opp_tab.go_to(opp_url)
+        #     await asyncio.sleep(3)
+        #     captcha = await opp_tab.find(
+        #     tag_name='div',
+        #     id='main-content',
+        #     raise_exc=False
+        #     )
+        #     if captcha:
+        #         logging.info("Captcha detected...")
         
         await asyncio.sleep(5)
 
@@ -342,30 +359,27 @@ async def run_scraper():
     async with Chrome(options=options) as browser:
         tab = await browser.start()
         await tab.enable_network_events()
-        await tab.go_to(BASE_URL)
+        await tab.go_to(f'{BASE_URL}agencies/search')
         await asyncio.sleep(2)
 
         '''<a class="MuiButtonBase-root MuiButton-root MuiButton-contained MuiButton-containedPrimary MuiButton-sizeMedium MuiButton-containedSizeMedium MuiButton-colorPrimary MuiButton-disableElevation MuiButton-root MuiButton-contained MuiButton-containedPrimary MuiButton-sizeMedium MuiButton-containedSizeMedium MuiButton-colorPrimary MuiButton-disableElevation css-mjjty1" tabindex="0" type="button" role="link" aria-label="Refresh" href="/" data-discover="true">
         <div class="MuiBox-root css-1bh59ny"></div><div class="MuiBox-root css-rrm59m">Refresh</div>
         <span class="MuiTouchRipple-root css-w0pj6f"></span>
         </a>'''
+        is_refresh = await tab.find(tag_name='a', class_name='MuiButtonBase-root', aria_label="Refresh", raise_exc=False)
 
-        # is_refresh = await tab.find(
-        #     tag_name='a',
-        #     aria_label="Refresh",
-        #     raise_exc=False
-        #     )
+        if is_refresh:
+            print('Button clicked')
+            await is_refresh.click(randint(-1, 2))
 
-        # if is_refresh:
-        #     print('Button clicked')
-        #     await is_refresh.click(randint(-1, 2))
+        await asyncio.sleep(5)
 
         await login(tab)
-        await asyncio.sleep(10)
+        await asyncio.sleep(4)
 
-        agency_tab = await browser.new_tab()
-        await agency_tab.go_to(f'{BASE_URL}agencies/search')
-        await asyncio.sleep(5)
+        # agency_tab = await browser.new_tab()
+        # await agency_tab.go_to(f'{BASE_URL}agencies/search')
+        # await asyncio.sleep(3)
 
         async def handle_agency(agency_obj):
             agency_page_tab = agency_obj.get('agency_tab')
@@ -394,7 +408,7 @@ async def run_scraper():
                 logging.error(f"Error processing {agency_obj['name']}: {e}")
                 return False
         
-        await navigate_agency_search_tab(agency_tab, browser, handle_agency)
+        await navigate_agency_search_tab(tab, browser, handle_agency)
         
         with open(os.path.join(raw_folder, 'open_opportunities_raw.json'), 'w') as f:
             json.dump(all_open_raw, f, indent=2)

@@ -79,3 +79,4 @@ dist/
 # (Your scraped output or raw data if you don't want it in repo)
 data/*.json
 output/*.jsoncr
+*.json
