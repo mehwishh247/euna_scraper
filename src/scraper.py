@@ -58,16 +58,15 @@ async def login(tab):
         x_offset=randint(-2,2),
         y_offset=randint(-2,2)
     )
-    await asyncio.sleep(uniform(6.0,9.5))
+    await asyncio.sleep(uniform(3.0,6.5))
     email = await tab.find(id="input-email")
     await email.click(
         x_offset=randint(-3, 5),
         y_offset=randint(-5, 2)
     )
-    await asyncio.sleep(uniform(1.0, 2.0))
+    await asyncio.sleep(1.0)
 
-    for i, char in enumerate(EMAIL):
-        await email.type_text(char, interval=0.2)
+    await email.type_text(EMAIL, humanize=True)
 
     continue_button = await tab.find(tag_name="button")
     await continue_button.click(
@@ -81,14 +80,14 @@ async def login(tab):
         x_offset=randint(-3, 5),
         y_offset=randint(-5, 2)
     )
-    for char in PASSWORD:
-        await password.type_text(char, interval=0.02)
+    password.type_text(PASSWORD, humanize=True)
+
     continue_button = await tab.find(tag_name="button")
     await continue_button.click(
         x_offset=randint(-1, 2),
         y_offset=randint(1, 3)
     )
-    await asyncio.sleep(uniform(5,7))
+    await asyncio.sleep(uniform(3,5))
 
     try:
         alert_p = await tab.find(
