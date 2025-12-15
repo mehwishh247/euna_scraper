@@ -1,5 +1,6 @@
 import asyncio
 import os
+import shutil
 import json
 from pathlib import Path
 from random import randint, uniform
@@ -25,6 +26,7 @@ ROOT = Path().cwd()
 EMAIL = os.getenv('EMAIL')
 PASSWORD = os.getenv('PASSWORD')
 BASE_URL = 'https://vendor.bonfirehub.com/'
+CHROME_ENV = os.environ['CHROME_ENV']
 
 PROXIES = [
     'http://103.157.200.126:3128',
@@ -270,38 +272,38 @@ async def fetch_opportunity_data(browser, opp_url) -> dict[str, str] | None:
 
     opp_tab = await browser.new_tab()
     data = None
-    custom_selector = (By.ID, "cf-chl-widget-4c1a1")
+    custom_selector = (By.ID, "main-container")
 
     try:
-        await opp_tab.go_to(opp_url)
-        await asyncio.sleep(5)
-        captcha = await opp_tab.find(
-            tag_name='iframe',
-            title="Widget containing a Cloudflare security challenge",
-            raise_exc=False
-            )
-        if captcha:
-            logging.info("Captcha detected...")
-            await asyncio.sleep(5)
-            return
-        # tgnx8
-
-        # async with opp_tab.expect_and_bypass_cloudflare_captcha(
-        #     custom_selector=custom_selector,
-        #     time_before_click=3,
-        #     time_to_wait_captcha=5
-        #     ):
-        #     await opp_tab.go_to(opp_url)
-        #     await asyncio.sleep(3)
-        #     captcha = await opp_tab.find(
+        # await opp_tab.go_to(opp_url)
+        # await asyncio.sleep(5)
+        # captcha = await opp_tab.find(
         #     tag_name='div',
-        #     id='main-content',
+
         #     raise_exc=False
         #     )
-        #     if captcha:
-        #         logging.info("Captcha detected...")
+        # if captcha:
+        #     logging.info("Captcha detected...")
+        #     await asyncio.sleep(5)
+        #     return
+        # captcha = await opp_tab.find(
+            # tag_name='div',
+            # id='main-content',
+            # raise_exc=False
+            # )
+        # if captcha:
+        #     logging.info("Captcha detected...")
+        # tgnx8
+
+        async with opp_tab.expect_and_bypass_cloudflare_captcha(
+            custom_selector=custom_selector,
+            time_before_click=3,
+            time_to_wait_captcha=6
+            ):
+            await opp_tab.go_to(opp_url)
+            await asyncio.sleep(4)
         
-        await asyncio.sleep(5)
+        # await asyncio.sleep(5)
 
         project_details = await opp_tab.find(
             tag_name='div',
@@ -351,6 +353,7 @@ async def run_scraper():
     
     proxy = get_proxy()
     options = ChromiumOptions()
+    options.binary_location = CHROME_ENV
     # options.add_argument(f'--proxy-server={proxy}')
     
     all_open_raw = []
